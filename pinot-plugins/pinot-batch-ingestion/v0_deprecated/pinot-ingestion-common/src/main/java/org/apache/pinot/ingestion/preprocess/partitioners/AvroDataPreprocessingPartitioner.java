@@ -16,41 +16,42 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-package org.apache.pinot.hadoop.job.partitioners;
+package org.apache.pinot.ingestion.preprocess.partitioners;
 
 import com.google.common.base.Preconditions;
-import java.util.List;
+import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.mapred.AvroValue;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.Partitioner;
-import org.apache.orc.mapred.OrcStruct;
-import org.apache.orc.mapred.OrcValue;
-import org.apache.pinot.hadoop.job.InternalConfigConstants;
-import org.apache.pinot.hadoop.utils.preprocess.OrcUtils;
+import org.apache.pinot.ingestion.utils.InternalConfigConstants;
+import org.apache.pinot.plugin.inputformat.avro.AvroRecordExtractor;
 import org.apache.pinot.segment.spi.partition.PartitionFunction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 
-public class OrcDataPreprocessingPartitioner extends Partitioner<WritableComparable, OrcValue> implements Configurable {
-  private static final Logger LOGGER = LoggerFactory.getLogger(OrcDataPreprocessingPartitioner.class);
+public class AvroDataPreprocessingPartitioner extends Partitioner<WritableComparable, AvroValue<GenericRecord>>
+    implements Configurable {
+  private static final Logger LOGGER = LoggerFactory.getLogger(AvroDataPreprocessingPartitioner.class);
 
   private Configuration _conf;
   private String _partitionColumn;
   private PartitionFunction _partitionFunction;
-  private int _partitionColumnId = -1;
+  private AvroRecordExtractor _avroRecordExtractor;
 
   @Override
   public void setConf(Configuration conf) {
     _conf = conf;
+    _avroRecordExtractor = new AvroRecordExtractor();
     _partitionColumn = conf.get(InternalConfigConstants.PARTITION_COLUMN_CONFIG);
     String partitionFunctionName = conf.get(InternalConfigConstants.PARTITION_FUNCTION_CONFIG);
     int numPartitions = Integer.parseInt(conf.get(InternalConfigConstants.NUM_PARTITIONS_CONFIG));
     _partitionFunction = PartitionFunctionFactory.getPartitionFunction(partitionFunctionName, numPartitions);
     LOGGER.info(
-        "Initialized OrcDataPreprocessingPartitioner with partitionColumn: {}, partitionFunction: {}, numPartitions: "
-            + "{}",
+        "Initialized AvroDataPreprocessingPartitioner with partitionColumn: {}, partitionFunction: {}, numPartitions:"
+            + " {}",
         _partitionColumn,
         partitionFunctionName, numPartitions);
   }
@@ -61,25 +62,18 @@ public class OrcDataPreprocessingPartitioner extends Partitioner<WritableCompara
   }
 
   @Override
-  public int getPartition(WritableComparable key, OrcValue value, int numPartitions) {
-    OrcStruct orcStruct = (OrcStruct) value.value;
-    if (_partitionColumnId == -1) {
-      List<String> fieldNames = orcStruct.getSchema().getFieldNames();
-      _partitionColumnId = fieldNames.indexOf(_partitionColumn);
-      Preconditions.checkState(_partitionColumnId != -1, "Failed to find partition column: %s in the ORC fields: %s",
-          _partitionColumn, fieldNames);
-      LOGGER.info("Field id for partition column: {} is: {}", _partitionColumn, _partitionColumnId);
-    }
-    WritableComparable partitionColumnValue = orcStruct.getFieldValue(_partitionColumnId);
-    Object convertedValue;
-    try {
-      convertedValue = OrcUtils.convert(partitionColumnValue);
-    } catch (Exception e) {
-      throw new IllegalStateException(
-          String.format("Caught exception while processing partition column: %s, id: %d in ORC struct: %s",
-              _partitionColumn, _partitionColumnId, orcStruct),
-          e);
-    }
+  public int getPartition(WritableComparable key, AvroValue<GenericRecord> value, int numPartitions) {
+    GenericRecord record = value.datum();
+    Object object = record.get(_partitionColumn);
+    Preconditions
+        .checkState(object != null, "Failed to find value for partition column: %s in record: %s", _partitionColumn,
+            record);
+    Object convertedValue = _avroRecordExtractor.convert(object);
+    Preconditions.checkState(convertedValue != null, "Invalid value: %s for partition column: %s in record: %s", object,
+        _partitionColumn, record);
+    Preconditions.checkState(convertedValue instanceof Number || convertedValue instanceof String,
+        "Value for partition column: %s must be either a Number or a String, found: %s in record: %s", _partitionColumn,
+        convertedValue.getClass(), record);
     // NOTE: Always partition with String type value because Broker uses String type value to prune segments
     return _partitionFunction.getPartition(convertedValue.toString());
   }
