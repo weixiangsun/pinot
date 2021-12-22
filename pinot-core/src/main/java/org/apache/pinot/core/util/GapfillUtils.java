@@ -21,7 +21,9 @@ package org.apache.pinot.core.util;
 import java.io.Serializable;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.pinot.common.request.context.ExpressionContext;
+import org.apache.pinot.common.request.context.FilterContext;
 import org.apache.pinot.common.request.context.FunctionContext;
+import org.apache.pinot.common.request.context.RequestContextUtils;
 import org.apache.pinot.common.utils.DataSchema;
 import org.apache.pinot.core.query.request.context.QueryContext;
 
@@ -31,7 +33,9 @@ import org.apache.pinot.core.query.request.context.QueryContext;
  */
 public class GapfillUtils {
   private static final String POST_AGGREGATE_GAP_FILL = "postaggregategapfill";
+  private static final String PRE_AGGREGATE_GAP_FILL = "preaggregategapfill";
   private static final String FILL = "fill";
+  private static final String FILTERING = "filtering";
 
   private GapfillUtils() {
   }
@@ -118,5 +122,39 @@ public class GapfillUtils {
 
   private static String canonicalizeFunctionName(String functionName) {
     return StringUtils.remove(functionName, '_').toLowerCase();
+  }
+
+  public static boolean isPreAggregateGapfill(ExpressionContext expressionContext) {
+    if (expressionContext.getType() != ExpressionContext.Type.FUNCTION) {
+      return false;
+    }
+
+    return PRE_AGGREGATE_GAP_FILL.equals(canonicalizeFunctionName(expressionContext.getFunction().getFunctionName()));
+  }
+
+  public static boolean isPreAggregateGapfill(QueryContext queryContext) {
+    for (ExpressionContext expressionContext : queryContext.getSelectExpressions()) {
+      if (isPreAggregateGapfill(expressionContext)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  public static FilterContext getFilterContext(QueryContext queryContext) {
+    for (ExpressionContext expressionContext : queryContext.getSelectExpressions()) {
+      if (isPreAggregateGapfill(expressionContext)) {
+        FunctionContext gapfillFun = expressionContext.getFunction();
+        for(ExpressionContext arg : gapfillFun.getArguments()) {
+          if(arg.getType() != ExpressionContext.Type.FUNCTION) continue;
+          FunctionContext functionContext = arg.getFunction();
+          if(functionContext.getFunctionName().equals(FILTERING)) {
+            return RequestContextUtils.getFilter(arg.getFunction().getArguments().get(0));
+          }
+        }
+        return null;
+      }
+    }
+    return null;
   }
 }

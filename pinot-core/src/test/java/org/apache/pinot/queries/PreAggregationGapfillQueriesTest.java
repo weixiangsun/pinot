@@ -1,0 +1,194 @@
+/**
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+package org.apache.pinot.queries;
+
+import java.io.File;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Random;
+import org.apache.commons.io.FileUtils;
+import org.apache.pinot.common.response.broker.BrokerResponseNative;
+import org.apache.pinot.common.response.broker.ResultTable;
+import org.apache.pinot.segment.local.indexsegment.immutable.ImmutableSegmentLoader;
+import org.apache.pinot.segment.local.segment.creator.impl.SegmentIndexCreationDriverImpl;
+import org.apache.pinot.segment.local.segment.readers.GenericRowRecordReader;
+import org.apache.pinot.segment.spi.ImmutableSegment;
+import org.apache.pinot.segment.spi.IndexSegment;
+import org.apache.pinot.segment.spi.creator.SegmentGeneratorConfig;
+import org.apache.pinot.spi.config.table.TableConfig;
+import org.apache.pinot.spi.config.table.TableType;
+import org.apache.pinot.spi.data.DateTimeFormatSpec;
+import org.apache.pinot.spi.data.DateTimeGranularitySpec;
+import org.apache.pinot.spi.data.FieldSpec.DataType;
+import org.apache.pinot.spi.data.Schema;
+import org.apache.pinot.spi.data.readers.GenericRow;
+import org.apache.pinot.spi.utils.ReadMode;
+import org.apache.pinot.spi.utils.builder.TableConfigBuilder;
+import org.testng.Assert;
+import org.testng.annotations.AfterClass;
+import org.testng.annotations.BeforeClass;
+import org.testng.annotations.Test;
+
+
+/**
+ * Queries test for PreAggregationGapfill queries.
+ */
+@SuppressWarnings("rawtypes")
+public class PreAggregationGapfillQueriesTest extends BaseQueriesTest {
+  private static final File INDEX_DIR = new File(FileUtils.getTempDirectory(), "PostAggregationGapfillQueriesTest");
+  private static final String RAW_TABLE_NAME = "parkingData";
+  private static final String SEGMENT_NAME = "testSegment";
+  private static final Random RANDOM = new Random();
+
+  private static final int NUM_LOTS = 4;
+
+  private static final String IS_OCCUPIED_COLUMN = "isOccupied";
+  private static final String LOT_ID_COLUMN = "lotId";
+  private static final String EVENT_TIME_COLUMN = "eventTime";
+  private static final Schema SCHEMA = new Schema.SchemaBuilder()
+      .addSingleValueDimension(IS_OCCUPIED_COLUMN, DataType.INT)
+      .addSingleValueDimension(LOT_ID_COLUMN, DataType.STRING)
+      .addSingleValueDimension(EVENT_TIME_COLUMN, DataType.LONG)
+      .setPrimaryKeyColumns(Arrays.asList(LOT_ID_COLUMN, EVENT_TIME_COLUMN))
+      .build();
+  private static final TableConfig TABLE_CONFIG = new TableConfigBuilder(TableType.OFFLINE).setTableName(RAW_TABLE_NAME)
+      .build();
+
+  private IndexSegment _indexSegment;
+  private List<IndexSegment> _indexSegments;
+
+  @Override
+  protected String getFilter() {
+    // NOTE: Use a match all filter to switch between DictionaryBasedAggregationOperator and AggregationOperator
+    return " WHERE eventTime >= 0";
+  }
+
+  @Override
+  protected IndexSegment getIndexSegment() {
+    return _indexSegment;
+  }
+
+  @Override
+  protected List<IndexSegment> getIndexSegments() {
+    return _indexSegments;
+  }
+
+  GenericRow createRow(String time, int lotId, boolean isOccupied) {
+    DateTimeFormatSpec dateTimeFormatter = new DateTimeFormatSpec("1:MILLISECONDS:SIMPLE_DATE_FORMAT:yyyy-MM-dd HH:mm:ss.SSS");
+    GenericRow parkingRow = new GenericRow();
+    parkingRow.putValue(EVENT_TIME_COLUMN, dateTimeFormatter.fromFormatToMillis(time));
+    parkingRow.putValue(LOT_ID_COLUMN, "LotId_" + String.valueOf(lotId));
+    parkingRow.putValue(IS_OCCUPIED_COLUMN, isOccupied);
+    return parkingRow;
+  }
+
+  @BeforeClass
+  public void setUp()
+      throws Exception {
+    FileUtils.deleteDirectory(INDEX_DIR);
+
+    long current = 1636286400000L; //November 7, 2021 12:00:00 PM
+    int duplicates = 16;
+    int interval = 1000 * 900; // 15 minutes
+    long start = current - duplicates * 2 * interval; //November 7, 2021 4:00:00 AM
+
+    List<GenericRow> records = new ArrayList<>(NUM_LOTS * 2);
+    records.add(createRow("2021-11-07 09:01:00.000", 0, true));
+    records.add(createRow("2021-11-07 09:17:00.000", 1, true));
+    records.add(createRow("2021-11-07 10:05:00.000", 2, true));
+    records.add(createRow("2021-11-07 10:31:00.000", 1, false));
+    records.add(createRow("2021-11-07 11:17:00.000", 2, false));
+    records.add(createRow("2021-11-07 11:54:00.000", 0, false));
+
+    SegmentGeneratorConfig segmentGeneratorConfig = new SegmentGeneratorConfig(TABLE_CONFIG, SCHEMA);
+    segmentGeneratorConfig.setTableName(RAW_TABLE_NAME);
+    segmentGeneratorConfig.setSegmentName(SEGMENT_NAME);
+    segmentGeneratorConfig.setOutDir(INDEX_DIR.getPath());
+
+    SegmentIndexCreationDriverImpl driver = new SegmentIndexCreationDriverImpl();
+    driver.init(segmentGeneratorConfig, new GenericRowRecordReader(records));
+    driver.build();
+
+    ImmutableSegment immutableSegment = ImmutableSegmentLoader.load(new File(INDEX_DIR, SEGMENT_NAME), ReadMode.mmap);
+    _indexSegment = immutableSegment;
+    _indexSegments = Arrays.asList(immutableSegment);
+  }
+
+  @Test
+  public void datetimeconvertGapfillTest() {/*
+    String dataTimeConvertQuery = "SELECT "
+        + "DATETIMECONVERT(eventTime, '1:MILLISECONDS:EPOCH', "
+        + "'1:MILLISECONDS:SIMPLE_DATE_FORMAT:yyyy-MM-dd HH:mm:ss.SSS', '1:HOURS') AS time_col, "
+        + "lotId, "
+        + "lastWithTime(isOccupied, eventTime, 'BOOLEAN')"
+        + "FROM parkingData "
+        + "WHERE eventTime >= 1635940800000 AND eventTime <= 1636286400000 "
+        + "GROUP BY 1, 2 "
+        + "ORDER BY 1 "
+        + "LIMIT 200";
+
+    BrokerResponseNative dateTimeConvertBrokerResponse = getBrokerResponseForSqlQuery(dataTimeConvertQuery);
+
+    ResultTable dateTimeConvertResultTable = dateTimeConvertBrokerResponse.getResultTable();
+    Assert.assertEquals(dateTimeConvertResultTable.getRows().size(), 24);
+*/
+    String gapfillQuery = "SELECT "
+        + "PreAggregateGapFill(DATETIMECONVERT(eventTime, '1:MILLISECONDS:EPOCH', "
+        + "'1:MILLISECONDS:SIMPLE_DATE_FORMAT:yyyy-MM-dd HH:mm:ss.SSS', '15:MINUTES'), "
+        + "'1:MILLISECONDS:SIMPLE_DATE_FORMAT:yyyy-MM-dd HH:mm:ss.SSS', "
+        + "'2021-11-07 9:00:00.000',  '2021-11-07 12:00:00.000', '15:MINUTES',"
+        + "TIME_SERIES_ON(eventTime, lotId),"
+//        + "FILTERING(isOccupied = 1), "
+        + "FILL(isOccupied, 'FILL_PREVIOUS_VALUE')) AS time_col, "
+        + "SUM(lastWithTime(isOccupied, eventTime, 'INT')) as occupied_slots_count "
+        + "FROM parkingData "
+        + "WHERE eventTime >= 1635940800000 AND eventTime <= 1636286400000 " // for raw data on pinot server side
+        + "HAVING occupied_slots_count > 1 " // for aggregated data
+        + "LIMIT 200";
+
+    DateTimeFormatSpec dateTimeFormatter
+        = new DateTimeFormatSpec("1:MILLISECONDS:SIMPLE_DATE_FORMAT:yyyy-MM-dd HH:mm:ss.SSS");
+    DateTimeGranularitySpec dateTimeGranularity = new DateTimeGranularitySpec("15:MINUTES");
+
+    BrokerResponseNative gapfillBrokerResponse = getBrokerResponseForSqlQuery(gapfillQuery);
+
+    ResultTable gapFillResultTable = gapfillBrokerResponse.getResultTable();
+    Assert.assertEquals(gapFillResultTable.getRows().size(), 12);
+    List<Object[]> gapFillRows = gapFillResultTable.getRows();
+    long start = dateTimeFormatter.fromFormatToMillis("2021-11-07 09:00:00.000");
+    for (int i = 0; i < 12; i ++) {
+      String firstTimeCol = (String) gapFillRows.get(i)[0];
+      System.out.print(firstTimeCol);
+      System.out.print(",");
+      System.out.println(gapFillRows.get(i)[1]);
+      long timeStamp = dateTimeFormatter.fromFormatToMillis(firstTimeCol);
+      Assert.assertEquals(timeStamp, start);
+      start += dateTimeGranularity.granularityToMillis();
+    }
+  }
+
+  @AfterClass
+  public void tearDown()
+      throws IOException {
+    _indexSegment.destroy();
+    FileUtils.deleteDirectory(INDEX_DIR);
+  }
+}
