@@ -81,6 +81,7 @@ import org.apache.pinot.core.query.aggregation.function.AggregationFunctionUtils
 import org.apache.pinot.core.query.optimizer.QueryOptimizer;
 import org.apache.pinot.core.requesthandler.PinotQueryParserFactory;
 import org.apache.pinot.core.transport.ServerInstance;
+import org.apache.pinot.core.util.GapfillUtils;
 import org.apache.pinot.core.util.QueryOptionsUtils;
 import org.apache.pinot.pql.parsers.pql2.ast.FilterKind;
 import org.apache.pinot.segment.spi.AggregationFunctionType;
@@ -219,6 +220,10 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
       requestStatistics.setErrorCode(QueryException.PQL_PARSING_ERROR_CODE);
       return new BrokerResponseNative(QueryException.getException(QueryException.PQL_PARSING_ERROR, e));
     }
+
+    BrokerRequest originalBrokerRequest = brokerRequest;
+    brokerRequest = GapfillUtils.stripGapfill(originalBrokerRequest);
+
     PinotQuery pinotQuery = brokerRequest.getPinotQuery();
     setOptions(pinotQuery, requestId, query, request);
 
@@ -538,8 +543,8 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
       }
     }
     BrokerResponseNative brokerResponse =
-        processBrokerRequest(requestId, brokerRequest, offlineBrokerRequest, offlineRoutingTable, realtimeBrokerRequest,
-            realtimeRoutingTable, remainingTimeMs, serverStats, requestStatistics);
+        processBrokerRequest(requestId, originalBrokerRequest, brokerRequest, offlineBrokerRequest, offlineRoutingTable,
+            realtimeBrokerRequest, realtimeRoutingTable, remainingTimeMs, serverStats, requestStatistics);
     brokerResponse.setExceptions(exceptions);
     long executionEndTimeNs = System.nanoTime();
     _brokerMetrics.addPhaseTiming(rawTableName, BrokerQueryPhase.QUERY_EXECUTION,
@@ -861,8 +866,8 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
     // Execute the query
     ServerStats serverStats = new ServerStats();
     BrokerResponseNative brokerResponse =
-        processBrokerRequest(requestId, brokerRequest, offlineBrokerRequest, offlineRoutingTable, realtimeBrokerRequest,
-            realtimeRoutingTable, remainingTimeMs, serverStats, requestStatistics);
+        processBrokerRequest(requestId, brokerRequest, brokerRequest, offlineBrokerRequest, offlineRoutingTable,
+            realtimeBrokerRequest, realtimeRoutingTable, remainingTimeMs, serverStats, requestStatistics);
     long executionEndTimeNs = System.nanoTime();
     _brokerMetrics.addPhaseTiming(rawTableName, BrokerQueryPhase.QUERY_EXECUTION,
         executionEndTimeNs - routingEndTimeNs);
@@ -2092,6 +2097,10 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
         || !QueryOptionsUtils.isResponseFormatSQL(queryOptions)) {
       throw new IllegalStateException("SQL query should always have response format and group-by mode set to SQL");
     }
+
+    if (pinotQuery.getDataSource().getSubquery() != null) {
+      validateRequest(pinotQuery.getDataSource().getSubquery(), queryResponseLimit);
+    }
   }
 
   /**
@@ -2195,9 +2204,9 @@ public abstract class BaseBrokerRequestHandler implements BrokerRequestHandler {
    * Processes the optimized broker requests for both OFFLINE and REALTIME table.
    */
   protected abstract BrokerResponseNative processBrokerRequest(long requestId, BrokerRequest originalBrokerRequest,
-      @Nullable BrokerRequest offlineBrokerRequest, @Nullable Map<ServerInstance, List<String>> offlineRoutingTable,
-      @Nullable BrokerRequest realtimeBrokerRequest, @Nullable Map<ServerInstance, List<String>> realtimeRoutingTable,
-      long timeoutMs, ServerStats serverStats, RequestStatistics requestStatistics)
+      BrokerRequest brokerRequest, @Nullable BrokerRequest offlineBrokerRequest, @Nullable Map<ServerInstance,
+      List<String>> offlineRoutingTable, @Nullable BrokerRequest realtimeBrokerRequest, @Nullable Map<ServerInstance,
+      List<String>> realtimeRoutingTable, long timeoutMs, ServerStats serverStats, RequestStatistics requestStatistics)
       throws Exception;
 
   /**

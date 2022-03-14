@@ -42,6 +42,7 @@ import org.apache.pinot.common.request.context.RequestContextUtils;
 import org.apache.pinot.common.utils.request.FilterQueryTree;
 import org.apache.pinot.common.utils.request.RequestUtils;
 import org.apache.pinot.core.query.request.context.QueryContext;
+import org.apache.pinot.core.util.GapfillUtils;
 import org.apache.pinot.segment.spi.AggregationFunctionType;
 
 
@@ -50,15 +51,33 @@ public class BrokerRequestToQueryContextConverter {
   }
 
   /**
+   * Validate the gapfill query.
+   */
+  public static void validateGapfillQuery(BrokerRequest brokerRequest) {
+    if (brokerRequest.getPinotQuery() != null) {
+      QueryContext queryContext = convertSQL(brokerRequest.getPinotQuery(), brokerRequest);
+      GapfillUtils.setGapfillType(queryContext);
+    }
+  }
+
+  /**
    * Converts the given {@link BrokerRequest} into a {@link QueryContext}.
    */
   public static QueryContext convert(BrokerRequest brokerRequest) {
-    return brokerRequest.getPinotQuery() != null ? convertSQL(brokerRequest) : convertPQL(brokerRequest);
+    if (brokerRequest.getPinotQuery() != null) {
+      QueryContext queryContext = convertSQL(brokerRequest.getPinotQuery(), brokerRequest);
+      GapfillUtils.setGapfillType(queryContext);
+      return queryContext;
+    } else {
+      return convertPQL(brokerRequest);
+    }
   }
 
-  private static QueryContext convertSQL(BrokerRequest brokerRequest) {
-    PinotQuery pinotQuery = brokerRequest.getPinotQuery();
-
+  private static QueryContext convertSQL(PinotQuery pinotQuery, BrokerRequest brokerRequest) {
+    QueryContext subQueryContext = null;
+    if (pinotQuery.getDataSource().getSubquery() != null) {
+      subQueryContext = convertSQL(pinotQuery.getDataSource().getSubquery(), brokerRequest);
+    }
     // SELECT
     List<ExpressionContext> selectExpressions;
     List<Expression> selectList = pinotQuery.getSelectList();
@@ -147,7 +166,7 @@ public class BrokerRequestToQueryContextConverter {
         .setGroupByExpressions(groupByExpressions).setOrderByExpressions(orderByExpressions)
         .setHavingFilter(havingFilter).setLimit(pinotQuery.getLimit()).setOffset(pinotQuery.getOffset())
         .setQueryOptions(pinotQuery.getQueryOptions()).setDebugOptions(pinotQuery.getDebugOptions())
-        .setBrokerRequest(brokerRequest).build();
+        .setSubqueryContext(subQueryContext).setBrokerRequest(brokerRequest).build();
   }
 
   private static QueryContext convertPQL(BrokerRequest brokerRequest) {
