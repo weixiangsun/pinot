@@ -98,6 +98,9 @@ public class CalciteSqlParser {
   private static final Pattern OPTIONS_REGEX_PATTEN =
       Pattern.compile("option\\s*\\(([^\\)]+)\\)", Pattern.CASE_INSENSITIVE);
 
+  private CalciteSqlParser() {
+  }
+
   /**
    * Checks for the presence of semicolon in the sql query and modifies the query accordingly
    *

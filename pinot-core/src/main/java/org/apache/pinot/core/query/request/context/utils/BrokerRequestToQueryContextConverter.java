@@ -42,11 +42,22 @@ import org.apache.pinot.common.request.context.RequestContextUtils;
 import org.apache.pinot.common.utils.request.FilterQueryTree;
 import org.apache.pinot.common.utils.request.RequestUtils;
 import org.apache.pinot.core.query.request.context.QueryContext;
+import org.apache.pinot.core.util.GapfillUtils;
 import org.apache.pinot.segment.spi.AggregationFunctionType;
 
 
 public class BrokerRequestToQueryContextConverter {
   private BrokerRequestToQueryContextConverter() {
+  }
+
+  /**
+   * Validate the gapfill query.
+   */
+  public static void validateGapfillQuery(BrokerRequest brokerRequest) {
+    if (brokerRequest.getPinotQuery() != null) {
+      QueryContext queryContext = convertSQL(brokerRequest.getPinotQuery(), brokerRequest);
+      GapfillUtils.setGapfillType(queryContext);
+    }
   }
 
   /**

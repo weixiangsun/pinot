@@ -39,6 +39,7 @@ import org.apache.pinot.common.request.context.RequestContextUtils;
 import org.apache.pinot.core.plan.maker.InstancePlanMakerImplV2;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunction;
 import org.apache.pinot.core.query.aggregation.function.AggregationFunctionFactory;
+import org.apache.pinot.core.util.GapfillUtils;
 import org.apache.pinot.core.util.MemoizedClassAssociation;
 
 
@@ -116,6 +117,8 @@ public class QueryContext {
   private int _minServerGroupTrimSize = InstancePlanMakerImplV2.DEFAULT_MIN_SERVER_GROUP_TRIM_SIZE;
   // Trim threshold to use for server combine for SQL GROUP BY
   private int _groupTrimThreshold = InstancePlanMakerImplV2.DEFAULT_GROUPBY_TRIM_THRESHOLD;
+
+  private GapfillUtils.GapfillType _gapfillType;
 
   private QueryContext(String tableName, List<ExpressionContext> selectExpressions, List<String> aliasList,
       @Nullable FilterContext filter, @Nullable List<ExpressionContext> groupByExpressions,
@@ -308,6 +311,14 @@ public class QueryContext {
 
   public void setMaxInitialResultHolderCapacity(int maxInitialResultHolderCapacity) {
     _maxInitialResultHolderCapacity = maxInitialResultHolderCapacity;
+  }
+
+  public GapfillUtils.GapfillType getGapfillType() {
+    return _gapfillType;
+  }
+
+  public void setGapfillType(GapfillUtils.GapfillType gapfillType) {
+    _gapfillType = gapfillType;
   }
 
   public int getNumGroupsLimit() {
@@ -531,56 +542,6 @@ public class QueryContext {
         queryContext._filteredAggregationFunctions = filteredAggregationFunctions;
         queryContext._aggregationFunctionIndexMap = aggregationFunctionIndexMap;
         queryContext._filteredAggregationsIndexMap = filteredAggregationsIndexMap;
-      }
-    }
-
-    /**
-     * Helper method to extract AGGREGATION FunctionContexts and FILTER FilterContexts from the given expression.
-     */
-    private static void getAggregations(ExpressionContext expression,
-        List<Pair<FunctionContext, FilterContext>> filteredAggregations) {
-      FunctionContext function = expression.getFunction();
-      if (function == null) {
-        return;
-      }
-      if (function.getType() == FunctionContext.Type.AGGREGATION) {
-        // Aggregation
-        filteredAggregations.add(Pair.of(function, null));
-      } else {
-        List<ExpressionContext> arguments = function.getArguments();
-        if (function.getFunctionName().equalsIgnoreCase("filter")) {
-          // Filtered aggregation
-          Preconditions.checkState(arguments.size() == 2, "FILTER must contain 2 arguments");
-          FunctionContext aggregation = arguments.get(0).getFunction();
-          Preconditions.checkState(aggregation != null && aggregation.getType() == FunctionContext.Type.AGGREGATION,
-              "First argument of FILTER must be an aggregation function");
-          ExpressionContext filterExpression = arguments.get(1);
-          Preconditions.checkState(filterExpression.getFunction() != null
-                  && filterExpression.getFunction().getType() == FunctionContext.Type.TRANSFORM,
-              "Second argument of FILTER must be a filter expression");
-          FilterContext filter = RequestContextUtils.getFilter(filterExpression);
-          filteredAggregations.add(Pair.of(aggregation, filter));
-        } else {
-          // Transform
-          for (ExpressionContext argument : arguments) {
-            getAggregations(argument, filteredAggregations);
-          }
-        }
-      }
-    }
-
-    /**
-     * Helper method to extract AGGREGATION FunctionContexts and FILTER FilterContexts from the given filter.
-     */
-    private static void getAggregations(FilterContext filter,
-        List<Pair<FunctionContext, FilterContext>> filteredAggregations) {
-      List<FilterContext> children = filter.getChildren();
-      if (children != null) {
-        for (FilterContext child : children) {
-          getAggregations(child, filteredAggregations);
-        }
-      } else {
-        getAggregations(filter.getPredicate().getLhs(), filteredAggregations);
       }
     }
 
