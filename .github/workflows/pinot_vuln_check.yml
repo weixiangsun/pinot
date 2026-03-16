@@ -37,7 +37,7 @@ jobs:
     name: Verify Docker Image
     runs-on: ubuntu-latest
     steps:
-      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-qemu-action@v4
         name: Set up QEMU
       - uses: actions/checkout@v4
       - name: Build the Docker image
